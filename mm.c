@@ -39,12 +39,6 @@ team_t team = {
 //이 과제에서는 시스템 콜을 통해 커널에게 커널 변수인 brk를 확장하는 시스템 콜을 사용하지 않고, malloc으로 할당한 힙 영역에 응용 수준에서 선언한 brk함수로 heap을 확장한다고 가정하는 것 같다.
 //즉 실제로 가상 메모리의 힙 영역을 증가시키지는 않는 것 같다.
 
-
-/*
-명시적 가용리스트 구현
-*/
-
-
     /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
 
@@ -79,15 +73,8 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp)-WSIZE)))
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char*)(bp)-DSIZE)))
 
-/*suc,pre에 대한 포인터를 얻는다.*/
-#define PRE(bp) (*(void**)(bp))
-#define SUC(bp) (*(void**)(bp+WSIZE))
-
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
-
-static void free_listp_insert(void *bp);
-static void free_listp_delete(void *bp);
 /* 
  * mm_init - initialize the malloc package.
  sbrk함수 호출로 4워드의 공간을 먼저 확보한다.
@@ -99,27 +86,19 @@ static void free_listp_delete(void *bp);
 
 static char* heap_listp;
 
-//가용 블록에 대한 리스트
-static char* free_listp;
-
 int mm_init(void)
 { 
-    if((heap_listp = mem_sbrk(6*WSIZE))==(void *)-1)
+    if((heap_listp = mem_sbrk(4*WSIZE))==(void *)-1)
         return -1;
     PUT(heap_listp,0);
-    //왜 16크기의 프롤로그를 만들어야 하는가...
-    PUT(heap_listp+(1*WSIZE),PACK(16, 1));
-    *((void **)heap_listp+2*WSIZE) = NULL;
-    *((void **)heap_listp+3*WSIZE) = NULL;
-    PUT(heap_listp+(4*WSIZE),PACK(16, 1));
-    PUT(heap_listp+(5*WSIZE),PACK(0,1));
+    PUT(heap_listp+(1*WSIZE),PACK(DSIZE, 1));
+    PUT(heap_listp+(2*WSIZE),PACK(DSIZE, 1));
+    PUT(heap_listp+(3*WSIZE),PACK(0,1));
     heap_listp += (2*WSIZE);
-    free_listp = heap_listp;
 
     if(extend_heap(CHUNKSIZE/WSIZE)==NULL){
         return -1;
     }
-
     return 0;
 }
 
@@ -135,7 +114,6 @@ static void * extend_heap(size_t words){
 
     PUT(HDRP(bp),PACK(size,0));
     PUT(FTRP(bp),PACK(size,0));
-    
     //에필로그 추가, 힙의 마지막을 추적하기 위해 heap_listp에 epilog 추가
     PUT(HDRP(NEXT_BLKP(bp)),PACK(0,1));
 
@@ -145,51 +123,39 @@ static void * extend_heap(size_t words){
 //반환된 블록 옆에 빈 리스트가 있다면 하나의 블록으로 합쳐준다.
 //양 옆에 가용 리스트가 없는 경우, 오른쪽에 있는 경우, 왼쪽에 있는 경우, 둘 다 있는 경우로 나눌 수 있다.
 static void *coalesce(void *bp){
-    // printf("coalesce size %d\n",GET_SIZE(HDRP(bp)));
-    // printf("coalesce %p\n",HDRP(bp));
-    // printf("coalesce left %p\n",PREV_BLKP(bp));
-    // printf("coalesce left head %p\n",HDRP(PREV_BLKP(bp)));
-    // printf("coalesce right head %p\n",HDRP(NEXT_BLKP(bp)));
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));//HDRP라도 문제 없나??
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
-    if(prev_alloc && !next_alloc){
-        free_listp_delete(NEXT_BLKP(bp));
+
+    if(prev_alloc && next_alloc){
+        return bp;
+    }
+    else if(prev_alloc && !next_alloc){
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp),PACK(size,0));
         PUT(FTRP(bp),PACK(size,0));
     }
     else if(!prev_alloc && next_alloc){
-        free_listp_delete(PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         PUT(FTRP(bp),PACK(size,0));
         PUT(HDRP(PREV_BLKP(bp)),PACK(size,0));
         bp = PREV_BLKP(bp);
     }
-    else if(!prev_alloc && !next_alloc){
-        free_listp_delete(NEXT_BLKP(bp));
-        free_listp_delete(PREV_BLKP(bp));
+    else{
         size += GET_SIZE(HDRP(PREV_BLKP(bp)))+GET_SIZE(FTRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)),PACK(size,0));
         PUT(FTRP(NEXT_BLKP(bp)),PACK(size,0));
         bp = PREV_BLKP(bp);
     }
-
-    free_listp_insert(bp);
     return bp;
 }
 
-// 현재 블록을 할당으로 바꾸고 size값 설정, 그리고 분할 그런데 만약 남은 가용 공간 크기가 2워드보다 작거나 같다면 분할x
-// 분할할 필요가 없다면 가용리스트에서 삭제, 분할 해야 한다면 삭제하고 남은 부분 추가
+//현재 블록을 할당으로 바꾸고 size값 설정, 그리고 분할 그런데 만약 남은 가용 공간 크기가 2워드보다 작거나 같다면 분할x
 void place(void *bp,size_t asize){
-    // printf("place시작\n");
     char* header = HDRP(bp);
     size_t size = GET_SIZE(header);
-    free_listp_delete(bp);
-    // printf("place free_list_delete 제거\n");
     //같다면 할당 번호만 1로 바꿔준다.
-    // printf("%d\n",size-asize);
-    if((size-asize)<=DSIZE){
+    if(size == asize){
         // printf("full_size : %d, alloc_size : %d header: %p footer: %p\n",size,asize,HDRP(bp),FTRP(bp));
         PUT(header,PACK(size,1));
         PUT(FTRP(bp),PACK(size,1));
@@ -200,26 +166,25 @@ void place(void *bp,size_t asize){
         PUT(header,PACK(asize,1));
         PUT(FTRP(bp),PACK(asize,1));
         char* remain = NEXT_BLKP(bp);
-        // printf("place free_list_insert 시작\n");
         // printf("alloc_size : %d header: %p block_size: %d alloc:%d footer: %p\n",asize,HDRP(bp),GET_SIZE(HDRP(bp)),GET_ALLOC(HDRP(bp)),FTRP(bp));
         PUT(HDRP(remain),size-asize);
-        // printf("place free_list_insert 시작\n");
         PUT(FTRP(remain),size-asize);
-        // printf("place free_list_insert 시작\n");
-        free_listp_insert(remain);
         // printf("remain header : %p size: %d footer :%p\n", HDRP(remain), GET_SIZE(HDRP(remain)), FTRP(remain));
     }
 }
 
 //현재 블록이 size보다 크고, 가용 블록이면 할당 아니라면 다음 블록으로 이동, 만약 다음 블록의 헤더를 봤는데 block size가 0으로 되어있다면 null return
-//가용 리스트 중에 검사
 void* find_fit(size_t asize){
-    char* curBlock = free_listp;
-    while(GET_ALLOC(HDRP(curBlock))==0){
-        if(GET_SIZE(HDRP(curBlock))>=asize){
+    char* curBlock = heap_listp + DSIZE;
+    //다음 블록의 헤더가 0이 아니면 계속
+    // printf("사ㅣ이즈 %d\n",GET_SIZE(HDRP(NEXT_BLKP(curBlock))));
+    while(GET_SIZE(HDRP(curBlock))!=0){
+        // printf("cur header : %p size: %d alloc:%d footer :%p\n", HDRP(curBlock), GET_SIZE(HDRP(curBlock)), GET_ALLOC(HDRP(curBlock)), FTRP(curBlock));
+        if(GET_SIZE(HDRP(curBlock))>=asize && GET_ALLOC(HDRP(curBlock))==0){
             return curBlock;
         }
-        curBlock = SUC(curBlock);
+        curBlock = NEXT_BLKP(curBlock);
+        // printf("가용공간 %d, 원하는 크기%d\n",GET_SIZE(HDRP(curBlock)),asize);
     }
     return NULL;
 }
@@ -270,6 +235,8 @@ void mm_free(void *ptr)
     PUT(FTRP(ptr),PACK(size,0));
     coalesce(ptr);
 }
+
+int a = 0;
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
@@ -293,23 +260,12 @@ void *mm_realloc(void *ptr, size_t size)
     return newptr;
 }
 
-//가용리스트의 맨 앞에 삽입
-static void free_listp_insert(void *bp){
-    char* next = free_listp;
-    free_listp = bp;
-    PRE(bp) = NULL;
-    SUC(bp) = next;
-    PRE(next) = bp;
-}
 
-//리스트의 처음을 삭제하는 경우는 달라짐.
-static void free_listp_delete(void *bp){
-    if(bp == free_listp){
-        free_listp = SUC(free_listp);
-        PRE(free_listp) = NULL;
-    }
-    else{
-        SUC(PRE(bp)) = SUC(bp);
-        PRE(SUC(bp)) = PRE(bp);
-    }
-}
+
+
+
+
+
+
+
+
