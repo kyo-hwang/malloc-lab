@@ -1,3 +1,6 @@
+implicit branch 묵시적 할당기 구현
+explicit branch 명시적 할당기 구현
+
 #####################################################################
 # CS:APP Malloc Lab
 # Handout files for students
